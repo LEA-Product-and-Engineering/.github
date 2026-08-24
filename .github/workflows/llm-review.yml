@@ -39,8 +39,8 @@ jobs:
       - name: Checkout pipeline scripts (org .github repo, never the PR code)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          repository: LEA-Product-and-Engineering/.github
-          ref: ${{ github.job_workflow_sha }}
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
 
       - name: Gather PR data
         run: |
