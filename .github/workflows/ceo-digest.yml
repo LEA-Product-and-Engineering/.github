@@ -1,5 +1,7 @@
 # Weekly merged-changes digest to the CEO (management oversight evidence for
 # the restated CHG-1 control). Mondays 13:00 UTC (= 9am ET).
+# Reads across the four repos via a short-lived LEA Review Bot app installation
+# token (no personal PAT).
 name: ceo-digest
 
 on:
@@ -14,8 +16,21 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Mint review-bot token (read across the four repos)
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.LEA_REVIEW_APP_ID }}
+          private-key: ${{ secrets.LEA_REVIEW_APP_PRIVATE_KEY }}
+          owner: LEA-Product-and-Engineering
+          repositories: |
+            lea-app
+            infra
+            lea-k8s
+            lea-wealth-plugins
+
       - name: Build and post digest
         env:
-          GH_TOKEN: ${{ secrets.DIGEST_GH_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SLACK_WEBHOOK_URL: ${{ secrets.CEO_DIGEST_SLACK_WEBHOOK }}
         run: bash scripts/digest.sh
