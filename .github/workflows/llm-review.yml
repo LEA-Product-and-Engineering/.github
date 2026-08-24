@@ -25,6 +25,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      checks: read
+    timeout-minutes: 30
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -35,10 +37,10 @@ jobs:
       GREPTILE_CHECK_NAME: ${{ inputs.greptile_check_name }}
     steps:
       - name: Checkout pipeline scripts (org .github repo, never the PR code)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: LEA-Product-and-Engineering/.github
-          ref: main
+          ref: ${{ github.job_workflow_sha }}
 
       - name: Gather PR data
         run: |
@@ -48,11 +50,11 @@ jobs:
           gh pr view "$PR" -R "$REPO" --json title -q .title > work/title.txt
           gh pr view "$PR" -R "$REPO" --json body  -q .body  > work/body.txt
           # Policy comes from the BASE branch so a PR cannot weaken its own review policy
-          gh api "repos/$REPO/contents/.github/review-policy.md?ref=$BASE_REF" \
+          gh api -X GET "repos/$REPO/contents/.github/review-policy.md" -f ref="$BASE_REF" \
             --jq .content | base64 -d > work/policy.md
-          # Docs-only detection: every changed file is markdown/text or under docs/
+          # Docs-only detection: every changed file is a markdown file
           gh pr view "$PR" -R "$REPO" --json files -q '.files[].path' > work/files.txt
-          if [ -s work/files.txt ] && ! grep -Ev '(^docs/|\.(md|txt)$)' work/files.txt > /dev/null; then
+          if [ -s work/files.txt ] && ! grep -Ev '\.md$' work/files.txt > /dev/null; then
             echo "DOCS_ONLY=true" >> "$GITHUB_ENV"
           else
             echo "DOCS_ONLY=false" >> "$GITHUB_ENV"
@@ -65,15 +67,15 @@ jobs:
           # Greptile does not submit formal PR reviews; it completes a check-run
           # on the exact head SHA when its analysis is done (verified 2026-08-24).
           for i in $(seq 1 30); do
-            DONE=$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs" --paginate \
-              --jq "[.check_runs[] | select(.name == \"$GREPTILE_CHECK_NAME\" and .status == \"completed\")] | length")
+            DONE=$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" \
+              --jq '[.check_runs[] | select(.name == env.GREPTILE_CHECK_NAME and .status == "completed" and (.conclusion == "success" or .conclusion == "neutral"))] | length')
             if [ "$DONE" -gt 0 ]; then
               echo "Greptile check-run completed for $HEAD_SHA (attempt $i)"; exit 0
             fi
             echo "No completed '$GREPTILE_CHECK_NAME' check-run for $HEAD_SHA yet (attempt $i/30)"; sleep 30
           done
           gh pr comment "$PR" -R "$REPO" --body \
-            "**LLM review pipeline: failing closed.** No completed Greptile check-run arrived for \`$HEAD_SHA\` within 15 minutes. No approval was submitted. Re-run the workflow once Greptile has reviewed, or merge via the documented admin bypass with a Code Changes register exception."
+            "**LLM review pipeline: failing closed.** No successful Greptile check-run arrived for \`$HEAD_SHA\` within 15 minutes. No approval was submitted. Re-run the workflow once Greptile has reviewed, or merge via the documented admin bypass with a Code Changes register exception."
           exit 1
 
       - name: Collect Greptile review content
@@ -82,11 +84,11 @@ jobs:
           set -euo pipefail
           # Review content lives in issue comments from the Greptile bot; inline
           # PR comments are collected too in case Greptile posts any.
-          gh api "repos/$REPO/issues/$PR/comments" --paginate \
-            --jq "[.[] | select(.user.login == \"$GREPTILE_LOGIN\") | {created_at, body}]" \
+          gh api "repos/$REPO/issues/$PR/comments?per_page=100" --paginate --slurp \
+            --jq '[.[][] | select(.user.login == env.GREPTILE_LOGIN) | {created_at, updated_at, body}] | sort_by(.updated_at // .created_at) | .[-5:]' \
             > work/greptile_issue_comments.json
-          gh api "repos/$REPO/pulls/$PR/comments" --paginate \
-            --jq "[.[] | select(.user.login == \"$GREPTILE_LOGIN\") | {path, line, body}]" \
+          gh api "repos/$REPO/pulls/$PR/comments?per_page=100" --paginate --slurp \
+            --jq '[.[][] | select(.user.login == env.GREPTILE_LOGIN) | {path, line, body}]' \
             > work/greptile_inline_comments.json
           if [ "$(jq length work/greptile_issue_comments.json)" -eq 0 ] && \
              [ "$(jq length work/greptile_inline_comments.json)" -eq 0 ]; then
@@ -112,6 +114,15 @@ jobs:
             export GREPTILE_FILE=work/greptile.json
           fi
           python scripts/adjudicate.py
+
+      - name: Abort if the PR head moved during this run
+        run: |
+          set -euo pipefail
+          CURRENT=$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)
+          if [ "$CURRENT" != "$HEAD_SHA" ]; then
+            echo "PR head moved during review ($HEAD_SHA -> $CURRENT); failing closed"
+            exit 1
+          fi
 
       - name: Submit review (deterministic; pinned to the adjudicated SHA)
         run: |
