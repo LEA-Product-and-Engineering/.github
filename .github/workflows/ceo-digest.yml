@@ -1,0 +1,21 @@
+# Weekly merged-changes digest to the CEO (management oversight evidence for
+# the restated CHG-1 control). Mondays 13:00 UTC (= 9am ET).
+name: ceo-digest
+
+on:
+  schedule:
+    - cron: "0 13 * * 1"
+  workflow_dispatch: {}
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build and post digest
+        env:
+          GH_TOKEN: ${{ secrets.DIGEST_GH_PAT }}
+          SLACK_WEBHOOK_URL: ${{ secrets.CEO_DIGEST_SLACK_WEBHOOK }}
+        run: bash scripts/digest.sh
