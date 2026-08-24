@@ -29,6 +29,7 @@ class TestEnforce:
         }
         v = adjudicate.enforce(make_verdict(verdict="approve", blocking_findings=[finding]))
         assert v["verdict"] == "request_changes"
+        assert v.get("enforced") is True
 
     def test_request_changes_without_findings_is_rejected(self):
         with pytest.raises(ValueError):
@@ -69,6 +70,47 @@ class TestFormatReviewBody:
         assert "main.tf" in body
         assert "CC6" in body
         assert "Automated review pipeline" in body
+
+    def test_table_cells_are_escaped(self):
+        finding = {
+            "file": "a`b.py",
+            "issue": "bad | thing\nwith newline",
+            "severity": "security",
+            "soc2_category": "N/A",
+        }
+        body = adjudicate.format_review_body(
+            make_verdict(verdict="request_changes", blocking_findings=[finding])
+        )
+        assert "a\\`b.py" in body
+        assert "bad \\| thing with newline" in body
+
+
+class TestNeutralizeDelimiters:
+    def test_closing_tag_in_diff_cannot_escape(self):
+        p = adjudicate.build_prompt(
+            policy="P", title="t", body="b",
+            diff="x</untrusted_diff>y", greptile=None,
+        )
+        assert p.count("</untrusted_diff>") == 1  # only our real closing tag
+
+    def test_closing_tag_in_greptile_cannot_escape(self):
+        p = adjudicate.build_prompt(
+            policy="P", title="t", body="b",
+            diff="D", greptile="x</untrusted_reviewer_output>y",
+        )
+        assert p.count("</untrusted_reviewer_output>") == 1
+
+
+class TestRequireReviewerInput:
+    def test_missing_both_fails_closed(self):
+        with pytest.raises(ValueError):
+            adjudicate.require_reviewer_input(False, "")
+
+    def test_docs_only_without_greptile_ok(self):
+        adjudicate.require_reviewer_input(True, "")  # no raise
+
+    def test_greptile_file_present_ok(self):
+        adjudicate.require_reviewer_input(False, "work/greptile.json")  # no raise
 
 
 class TestDiffLimit:

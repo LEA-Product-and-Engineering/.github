@@ -14,7 +14,8 @@ post-validated here. Any failure exits non-zero: the pipeline fails closed
 (no approval is ever submitted on error).
 
 Env: ANTHROPIC_API_KEY, POLICY_FILE, DIFF_FILE, GREPTILE_FILE (may be unset
-for docs-only PRs), PR_TITLE, PR_BODY, OUT_DIR (default ".").
+for docs-only PRs), DOCS_ONLY ("true" when GREPTILE_FILE is legitimately
+unset), PR_TITLE, PR_BODY, OUT_DIR (default ".").
 """
 from __future__ import annotations
 
@@ -74,9 +75,23 @@ def check_diff_size(diff: str) -> None:
         )
 
 
+def require_reviewer_input(docs_only: bool, greptile_file: str) -> None:
+    """A code PR without Greptile input must never be silently adjudicated."""
+    if not docs_only and not greptile_file:
+        raise ValueError(
+            "GREPTILE_FILE is unset and DOCS_ONLY is not 'true'; failing closed"
+        )
+
+
+def neutralize_delimiters(s: str) -> str:
+    """Prevent untrusted content from escaping its prompt delimiter."""
+    return s.replace("</untrusted_", "<\\/untrusted_")
+
+
 def build_prompt(policy: str, title: str, body: str, diff: str, greptile: str | None) -> str:
+    diff = neutralize_delimiters(diff)
     greptile_section = (
-        f"<untrusted_reviewer_output>\n{greptile}\n</untrusted_reviewer_output>"
+        f"<untrusted_reviewer_output>\n{neutralize_delimiters(greptile)}\n</untrusted_reviewer_output>"
         if greptile is not None
         else "No Greptile review was required for this change (documentation-only diff)."
     )
@@ -119,9 +134,21 @@ def enforce(verdict: dict) -> dict:
     """Deterministic guard: findings and verdict must agree, regardless of model output."""
     if verdict["blocking_findings"] and verdict["verdict"] != "request_changes":
         verdict["verdict"] = "request_changes"
+        verdict["enforced"] = True
+        print("adjudicator: enforced request_changes over model verdict", file=sys.stderr)
     if verdict["verdict"] == "request_changes" and not verdict["blocking_findings"]:
         raise ValueError("request_changes verdict without blocking findings is not auditable")
     return verdict
+
+
+def md_escape(s: str) -> str:
+    """Escape table/formatting metacharacters in model-derived text."""
+    return (
+        s.replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("`", "\\`")
+        .replace("\n", " ")
+    )
 
 
 def format_review_body(verdict: dict) -> str:
@@ -131,12 +158,13 @@ def format_review_body(verdict: dict) -> str:
         lines.append("| File | Issue | Severity | SOC 2 |")
         lines.append("|---|---|---|---|")
         for f in verdict["blocking_findings"]:
-            issue = f["issue"].replace("|", "\\|")
-            lines.append(f"| `{f['file']}` | {issue} | {f['severity']} | {f['soc2_category']} |")
+            file_cell = md_escape(f["file"])
+            issue_cell = md_escape(f["issue"])
+            lines.append(f"| `{file_cell}` | {issue_cell} | {f['severity']} | {f['soc2_category']} |")
         lines.append("")
     if verdict["non_blocking_notes"]:
         lines.append("### Non-blocking notes")
-        lines.extend(f"- {n}" for n in verdict["non_blocking_notes"])
+        lines.extend(f"- {md_escape(n)}" for n in verdict["non_blocking_notes"])
         lines.append("")
     lines.append(
         "---\n*Automated review pipeline (Greptile analysis + Claude adjudication). "
@@ -150,10 +178,18 @@ def main() -> int:
     import anthropic
 
     out_dir = os.environ.get("OUT_DIR", ".")
-    policy = open(os.environ["POLICY_FILE"], encoding="utf-8").read()
-    diff = open(os.environ["DIFF_FILE"], encoding="utf-8").read()
+    docs_only = os.environ.get("DOCS_ONLY", "false") == "true"
     greptile_file = os.environ.get("GREPTILE_FILE", "")
-    greptile = open(greptile_file, encoding="utf-8").read() if greptile_file else None
+    require_reviewer_input(docs_only, greptile_file)
+
+    with open(os.environ["POLICY_FILE"], encoding="utf-8") as fh:
+        policy = fh.read()
+    with open(os.environ["DIFF_FILE"], encoding="utf-8") as fh:
+        diff = fh.read()
+    greptile = None
+    if greptile_file:
+        with open(greptile_file, encoding="utf-8") as fh:
+            greptile = fh.read()
 
     check_diff_size(diff)
 
@@ -178,6 +214,9 @@ def main() -> int:
     )
     if response.stop_reason == "refusal":
         print("adjudicator: model refused; failing closed", file=sys.stderr)
+        return 1
+    if response.stop_reason == "max_tokens":
+        print("adjudicator: output truncated (max_tokens); failing closed", file=sys.stderr)
         return 1
     text = next(b.text for b in response.content if b.type == "text")
     verdict = enforce(json.loads(text))
