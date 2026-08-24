@@ -115,10 +115,10 @@ jobs:
           # Review content lives in issue comments from the Greptile bot; inline
           # PR comments are collected too in case Greptile posts any.
           gh api "repos/$REPO/issues/$PR/comments?per_page=100" --paginate --slurp \
-            --jq '[.[][] | select(.user.login == env.GREPTILE_LOGIN) | {created_at, updated_at, body}] | sort_by(.updated_at // .created_at) | .[-5:]' \
+            | jq '[.[][] | select(.user.login == env.GREPTILE_LOGIN) | {created_at, updated_at, body}] | sort_by(.updated_at // .created_at) | .[-5:]' \
             > work/greptile_issue_comments.json
           gh api "repos/$REPO/pulls/$PR/comments?per_page=100" --paginate --slurp \
-            --jq '[.[][] | select(.user.login == env.GREPTILE_LOGIN) | {path, line, body}]' \
+            | jq '[.[][] | select(.user.login == env.GREPTILE_LOGIN) | {path, line, body}]' \
             > work/greptile_inline_comments.json
           if [ "$(jq length work/greptile_issue_comments.json)" -eq 0 ] && \
              [ "$(jq length work/greptile_inline_comments.json)" -eq 0 ]; then
