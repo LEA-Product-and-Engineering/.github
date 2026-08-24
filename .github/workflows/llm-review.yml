@@ -61,9 +61,27 @@ jobs:
           gh pr diff "$PR" -R "$REPO" > work/diff.patch
           gh pr view "$PR" -R "$REPO" --json title -q .title > work/title.txt
           gh pr view "$PR" -R "$REPO" --json body  -q .body  > work/body.txt
-          # Policy comes from the BASE branch so a PR cannot weaken its own review policy
-          gh api -X GET "repos/$REPO/contents/.github/review-policy.md" -f ref="$BASE_REF" \
-            --jq .content | base64 -d > work/policy.md
+          # Policy comes from the BASE branch so a PR cannot weaken its own
+          # review policy. Bootstrap case: if the base branch has no policy yet
+          # (the enablement PR introduces it), fall back to the org default
+          # policy shipped in this pinned pipeline checkout - still a source
+          # the PR cannot influence. Any error other than a clean 404 fails closed.
+          set +e
+          RESP=$(gh api -X GET "repos/$REPO/contents/.github/review-policy.md" -f ref="$BASE_REF" 2>&1)
+          CODE=$?
+          set -e
+          if [ "$CODE" -eq 0 ]; then
+            jq -r .content <<<"$RESP" | base64 -d > work/policy.md
+            echo "policy: repo policy from base ref '$BASE_REF'"
+          elif grep -q "HTTP 404" <<<"$RESP"; then
+            cp review-policy-default.md work/policy.md
+            echo "policy: no policy on base ref '$BASE_REF'; using org default from pinned checkout"
+          else
+            echo "policy fetch failed (not a 404); failing closed:"
+            echo "$RESP"
+            exit 1
+          fi
+          [ -s work/policy.md ] || { echo "empty policy; failing closed"; exit 1; }
           # Docs-only detection: every changed file is a markdown file
           gh pr view "$PR" -R "$REPO" --json files -q '.files[].path' > work/files.txt
           if [ -s work/files.txt ] && ! grep -Ev '\.md$' work/files.txt > /dev/null; then
