@@ -1,0 +1,129 @@
+# LEA LLM PR review pipeline (reusable).
+# Greptile reviews (check-run + issue comment) -> Claude adjudicates against
+# .github/review-policy.md -> this workflow submits the formal APPROVE /
+# REQUEST_CHANGES that satisfies the branch ruleset's 1-approval requirement.
+# Fail-closed by design: any error means no approval is submitted.
+name: llm-review
+
+on:
+  workflow_call:
+    inputs:
+      greptile_login:
+        type: string
+        default: "greptile-apps[bot]"
+      greptile_check_name:
+        type: string
+        default: "Greptile Review"
+    secrets:
+      anthropic_api_key:
+        required: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      GREPTILE_LOGIN: ${{ inputs.greptile_login }}
+      GREPTILE_CHECK_NAME: ${{ inputs.greptile_check_name }}
+    steps:
+      - name: Checkout pipeline scripts (org .github repo, never the PR code)
+        uses: actions/checkout@v4
+        with:
+          repository: LEA-Product-and-Engineering/.github
+          ref: main
+
+      - name: Gather PR data
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          gh pr diff "$PR" -R "$REPO" > work/diff.patch
+          gh pr view "$PR" -R "$REPO" --json title -q .title > work/title.txt
+          gh pr view "$PR" -R "$REPO" --json body  -q .body  > work/body.txt
+          # Policy comes from the BASE branch so a PR cannot weaken its own review policy
+          gh api "repos/$REPO/contents/.github/review-policy.md?ref=$BASE_REF" \
+            --jq .content | base64 -d > work/policy.md
+          # Docs-only detection: every changed file is markdown/text or under docs/
+          gh pr view "$PR" -R "$REPO" --json files -q '.files[].path' > work/files.txt
+          if [ -s work/files.txt ] && ! grep -Ev '(^docs/|\.(md|txt)$)' work/files.txt > /dev/null; then
+            echo "DOCS_ONLY=true" >> "$GITHUB_ENV"
+          else
+            echo "DOCS_ONLY=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Wait for Greptile check-run on the current head SHA
+        if: env.DOCS_ONLY == 'false'
+        run: |
+          set -euo pipefail
+          # Greptile does not submit formal PR reviews; it completes a check-run
+          # on the exact head SHA when its analysis is done (verified 2026-08-24).
+          for i in $(seq 1 30); do
+            DONE=$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs" --paginate \
+              --jq "[.check_runs[] | select(.name == \"$GREPTILE_CHECK_NAME\" and .status == \"completed\")] | length")
+            if [ "$DONE" -gt 0 ]; then
+              echo "Greptile check-run completed for $HEAD_SHA (attempt $i)"; exit 0
+            fi
+            echo "No completed '$GREPTILE_CHECK_NAME' check-run for $HEAD_SHA yet (attempt $i/30)"; sleep 30
+          done
+          gh pr comment "$PR" -R "$REPO" --body \
+            "**LLM review pipeline: failing closed.** No completed Greptile check-run arrived for \`$HEAD_SHA\` within 15 minutes. No approval was submitted. Re-run the workflow once Greptile has reviewed, or merge via the documented admin bypass with a Code Changes register exception."
+          exit 1
+
+      - name: Collect Greptile review content
+        if: env.DOCS_ONLY == 'false'
+        run: |
+          set -euo pipefail
+          # Review content lives in issue comments from the Greptile bot; inline
+          # PR comments are collected too in case Greptile posts any.
+          gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq "[.[] | select(.user.login == \"$GREPTILE_LOGIN\") | {created_at, body}]" \
+            > work/greptile_issue_comments.json
+          gh api "repos/$REPO/pulls/$PR/comments" --paginate \
+            --jq "[.[] | select(.user.login == \"$GREPTILE_LOGIN\") | {path, line, body}]" \
+            > work/greptile_inline_comments.json
+          if [ "$(jq length work/greptile_issue_comments.json)" -eq 0 ] && \
+             [ "$(jq length work/greptile_inline_comments.json)" -eq 0 ]; then
+            echo "Greptile check-run completed but no review content found; failing closed"
+            exit 1
+          fi
+          jq -n --slurpfile ic work/greptile_issue_comments.json \
+                --slurpfile pc work/greptile_inline_comments.json \
+            '{summary_comments: $ic[0], inline_comments: $pc[0]}' > work/greptile.json
+
+      - name: Adjudicate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
+          POLICY_FILE: work/policy.md
+          DIFF_FILE: work/diff.patch
+          OUT_DIR: work
+        run: |
+          set -euo pipefail
+          pip install --quiet -r scripts/requirements.txt
+          export PR_TITLE="$(cat work/title.txt)"
+          export PR_BODY="$(cat work/body.txt)"
+          if [ "$DOCS_ONLY" = "false" ]; then
+            export GREPTILE_FILE=work/greptile.json
+          fi
+          python scripts/adjudicate.py
+
+      - name: Submit review (deterministic; pinned to the adjudicated SHA)
+        run: |
+          set -euo pipefail
+          VERDICT=$(jq -r .verdict work/verdict.json)
+          case "$VERDICT" in
+            approve)          EVENT=APPROVE ;;
+            request_changes)  EVENT=REQUEST_CHANGES ;;
+            *) echo "unknown verdict '$VERDICT'; failing closed"; exit 1 ;;
+          esac
+          gh api "repos/$REPO/pulls/$PR/reviews" \
+            -f event="$EVENT" \
+            -f commit_id="$HEAD_SHA" \
+            -f body="$(cat work/review_body.md)"
+          echo "Submitted $EVENT for $REPO#$PR @ $HEAD_SHA"
