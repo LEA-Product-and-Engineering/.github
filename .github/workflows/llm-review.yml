@@ -1,7 +1,8 @@
 # LEA LLM PR review pipeline (reusable).
 # Greptile reviews (check-run + issue comment) -> Claude adjudicates against
-# .github/review-policy.md -> this workflow submits the formal APPROVE /
-# REQUEST_CHANGES that satisfies the branch ruleset's 1-approval requirement.
+# .github/review-policy.md -> the approval is submitted by the LEA Review Bot
+# GitHub App via a short-lived installation token (never GITHUB_TOKEN; the
+# org/enterprise "Actions can approve PRs" setting stays off).
 # Fail-closed by design: any error means no approval is submitted.
 name: llm-review
 
@@ -17,6 +18,10 @@ on:
     secrets:
       anthropic_api_key:
         required: true
+      review_app_id:
+        required: true
+      review_app_private_key:
+        required: true
 
 jobs:
   review:
@@ -24,11 +29,8 @@ jobs:
     if: github.event.pull_request.draft == false
     permissions:
       contents: read
-      pull-requests: write
-      checks: read
     timeout-minutes: 30
     env:
-      GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       PR: ${{ github.event.pull_request.number }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -41,6 +43,16 @@ jobs:
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
+
+      - name: Mint review-bot token (approvals come from the app, never GITHUB_TOKEN)
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.review_app_id }}
+          private-key: ${{ secrets.review_app_private_key }}
+
+      - name: Use the app token for all GitHub API calls
+        run: echo "GH_TOKEN=${{ steps.app-token.outputs.token }}" >> "$GITHUB_ENV"
 
       - name: Gather PR data
         run: |
