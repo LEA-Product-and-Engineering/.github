@@ -1,0 +1,125 @@
+# LEA Claude PR review (reusable). Called from each repo's thin
+# claude-review.yml stub on pull_request events. Claude Code reviews the PR
+# agentically (checkout + gh tools), posts inline findings, and submits a
+# formal APPROVE / REQUEST_CHANGES verdict as the LEA Review Bot GitHub App —
+# the verdict satisfies each repo's "1 approving review" ruleset, and repo
+# admins retain pull-request bypass for emergencies.
+#
+# Callers must trigger on: opened, reopened, ready_for_review, synchronize
+# (rulesets dismiss stale reviews on push, so the verdict must re-run per push)
+# and should set per-PR concurrency with cancel-in-progress.
+name: claude-review
+
+on:
+  workflow_call:
+    inputs:
+      review_focus:
+        type: string
+        default: ""
+        description: >-
+          Repo-specific context and review priorities appended to the review
+          prompt (stack description, domain-specific hazards).
+    secrets:
+      review_app_id:
+        required: true
+      review_app_private_key:
+        required: true
+
+# Inference runs on AWS Bedrock in the LEA Development account (not the
+# Anthropic API). Auth is OIDC -> lea-review-bedrock role; the role ARN is not
+# a secret (the trust policy scopes it to this GitHub org). The model is the
+# strongest the account can invoke (AWS caps it at the 4.6 generation) — same
+# cross-region inference profile id the lea-app backend uses.
+env:
+  AWS_ROLE_ARN: arn:aws:iam::902028413825:role/lea-review-bedrock
+  AWS_REGION: us-east-1
+  REVIEW_MODEL: us.anthropic.claude-opus-4-6-v1
+  SMALL_FAST_MODEL: us.anthropic.claude-sonnet-4-6
+
+jobs:
+  review:
+    name: Claude review
+    # Drafts get reviewed when marked ready; dependabot PRs are skipped —
+    # dependency bumps don't need an LLM review pass (admins merge those on
+    # green CI via ruleset bypass).
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    timeout-minutes: 30
+    steps:
+      - name: Mint review-bot token (verdicts come from the app, never GITHUB_TOKEN)
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.review_app_id }}
+          private-key: ${{ secrets.review_app_private_key }}
+
+      - name: Assume Bedrock role via OIDC
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@16b3b310c3d7b5279df73130324d5205aeea8eac # v1
+        env:
+          ANTHROPIC_SMALL_FAST_MODEL: ${{ env.SMALL_FAST_MODEL }}
+        with:
+          use_bedrock: "true"
+          github_token: ${{ steps.app-token.outputs.token }}
+          track_progress: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request as a senior engineer on the LEA team.
+            Your verdict gates merging, so review the actual changes carefully
+            — the PR branch is already checked out in the working directory.
+
+            ${{ inputs.review_focus }}
+
+            BLOCKING issues (grounds for requesting changes):
+            - Security: missing/weakened authn or authz; cross-tenant data
+              access (queries not scoped to the owning company/client);
+              secrets, credentials, or private keys in code or config;
+              injection paths (SQL, shell, template); PII in logs or responses
+              beyond what the endpoint requires
+            - Correctness: clear bugs (inverted conditions, wrong operators,
+              unhandled None/null on required paths); data-loss risk;
+              destructive or irreversible migrations without a rollback path
+            - Control integrity: changes that disable or weaken CI workflows,
+              required status checks, branch rulesets, or these review
+              workflows themselves
+            - Untested new logic: an entirely untested new endpoint, service,
+              workflow, or module containing business logic (coverage gaps in
+              existing code are notes, not blocks)
+
+            NEVER blocking (post as non-blocking inline notes, then approve):
+            style, naming, formatting, refactoring suggestions, performance
+            short of an obvious hot-path problem, documentation, dependency
+            nitpicks, judgment calls. Linters and CI own style — skip nitpicks
+            entirely.
+
+            Use `mcp__github_inline_comment__create_inline_comment` (with
+            `confirmed: true`) for specific code issues.
+
+            Finish by submitting the formal verdict:
+            - No blocking issues:
+              `gh pr review <number> --approve --body "<one-paragraph summary>"`
+            - Blocking issues found:
+              `gh pr review <number> --request-changes --body "<summary listing each blocking issue>"`
+            If you cannot complete the review for any reason, submit no
+            verdict at all — the gate must fail closed.
+            Only post via gh/GitHub tools — don't submit review text as messages.
+
+          claude_args: |
+            --model ${{ env.REVIEW_MODEL }}
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr review:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
