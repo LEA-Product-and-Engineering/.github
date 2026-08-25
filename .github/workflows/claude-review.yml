@@ -39,12 +39,10 @@ env:
 jobs:
   review:
     name: Claude review
-    # Drafts get reviewed when marked ready; dependabot PRs are skipped —
-    # dependency bumps don't need an LLM review pass (admins merge those on
-    # green CI via ruleset bypass).
-    if: >-
-      github.event.pull_request.draft == false &&
-      github.event.pull_request.user.login != 'dependabot[bot]'
+    # Drafts get reviewed when marked ready. Dependabot PRs ARE reviewed —
+    # the rulesets require an approval on every PR, so skipping bots would
+    # force admin-bypass merges for routine dependency bumps.
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     permissions:
       contents: read
