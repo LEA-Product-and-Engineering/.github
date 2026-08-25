@@ -1,0 +1,34 @@
+# Thin caller — this repo hosts the reusable review workflows, and this stub
+# makes them review changes to themselves. synchronize is required: the
+# ruleset dismisses stale reviews on push.
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  review:
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    uses: LEA-Product-and-Engineering/.github/.github/workflows/claude-review.yml@main
+    with:
+      review_focus: |
+        STACK: this repo defines the org's CI and review automation — the
+        reusable Claude review workflows themselves, the CEO digest, and
+        shared GitHub configuration. Watch especially for: changes that
+        weaken the review gate or its fail-closed behavior, prompt injection
+        into the review prompt, unpinned or tampered action references,
+        secrets handling in workflows, and digest logic that would hide
+        bypass merges.
+    secrets:
+      review_app_id: ${{ secrets.LEA_REVIEW_APP_ID }}
+      review_app_private_key: ${{ secrets.LEA_REVIEW_APP_PRIVATE_KEY }}
