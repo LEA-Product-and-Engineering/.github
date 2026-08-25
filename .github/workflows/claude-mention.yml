@@ -1,0 +1,54 @@
+# Interactive @claude responses (reusable). Called from each repo's thin
+# claude-mention.yml stub on issue_comment / pull_request_review_comment /
+# pull_request_review / issues events. Runs as the LEA Review Bot GitHub App;
+# never submits review verdicts (claude-review.yml owns the merge gate).
+name: claude-mention
+
+on:
+  workflow_call:
+    secrets:
+      anthropic_api_key:
+        required: true
+      review_app_id:
+        required: true
+      review_app_private_key:
+        required: true
+
+jobs:
+  claude:
+    name: Respond to @claude
+    # sender.type guard: App-token comments (unlike GITHUB_TOKEN ones) DO
+    # trigger issue_comment, so without it Claude can loop on its own replies.
+    if: >-
+      github.event.sender.type != 'Bot' &&
+      ((github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+      actions: read
+    timeout-minutes: 30
+    steps:
+      - name: Mint review-bot token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.review_app_id }}
+          private-key: ${{ secrets.review_app_private_key }}
+
+      # App token here (not GITHUB_TOKEN): the action pushes commits via the
+      # credentials checkout persists, and the job's GITHUB_TOKEN is read-only.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@16b3b310c3d7b5279df73130324d5205aeea8eac # v1
+        with:
+          anthropic_api_key: ${{ secrets.anthropic_api_key }}
+          github_token: ${{ steps.app-token.outputs.token }}
