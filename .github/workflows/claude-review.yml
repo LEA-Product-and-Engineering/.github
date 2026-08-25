@@ -20,12 +20,21 @@ on:
           Repo-specific context and review priorities appended to the review
           prompt (stack description, domain-specific hazards).
     secrets:
-      anthropic_api_key:
-        required: true
       review_app_id:
         required: true
       review_app_private_key:
         required: true
+
+# Inference runs on AWS Bedrock in the LEA Development account (not the
+# Anthropic API). Auth is OIDC -> lea-review-bedrock role; the role ARN is not
+# a secret (the trust policy scopes it to this GitHub org). The model is the
+# strongest the account can invoke (AWS caps it at the 4.6 generation) — same
+# cross-region inference profile id the lea-app backend uses.
+env:
+  AWS_ROLE_ARN: arn:aws:iam::902028413825:role/lea-review-bedrock
+  AWS_REGION: us-east-1
+  REVIEW_MODEL: us.anthropic.claude-opus-4-6-v1
+  SMALL_FAST_MODEL: us.anthropic.claude-sonnet-4-6
 
 jobs:
   review:
@@ -50,13 +59,21 @@ jobs:
           app-id: ${{ secrets.review_app_id }}
           private-key: ${{ secrets.review_app_private_key }}
 
+      - name: Assume Bedrock role via OIDC
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
 
       - uses: anthropics/claude-code-action@16b3b310c3d7b5279df73130324d5205aeea8eac # v1
+        env:
+          ANTHROPIC_SMALL_FAST_MODEL: ${{ env.SMALL_FAST_MODEL }}
         with:
-          anthropic_api_key: ${{ secrets.anthropic_api_key }}
+          use_bedrock: "true"
           github_token: ${{ steps.app-token.outputs.token }}
           track_progress: true
           prompt: |
@@ -104,4 +121,5 @@ jobs:
             Only post via gh/GitHub tools — don't submit review text as messages.
 
           claude_args: |
+            --model ${{ env.REVIEW_MODEL }}
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr review:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
