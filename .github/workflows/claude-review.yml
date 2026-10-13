@@ -25,13 +25,13 @@ on:
       review_app_private_key:
         required: true
 
-# Inference runs on AWS Bedrock in the LEA Development account (not the
+# Inference runs on AWS Bedrock in the LEA CI/CD account (not the
 # Anthropic API). Auth is OIDC -> lea-review-bedrock role; the role ARN is not
 # a secret (the trust policy scopes it to this GitHub org). The model is the
 # strongest the account can invoke (AWS caps it at the 4.6 generation) — same
 # cross-region inference profile id the lea-app backend uses.
 env:
-  AWS_ROLE_ARN: arn:aws:iam::902028413825:role/lea-review-bedrock
+  AWS_ROLE_ARN: arn:aws:iam::442879246345:role/lea-review-bedrock
   AWS_REGION: us-east-1
   REVIEW_MODEL: us.anthropic.claude-opus-4-6-v1
   SMALL_FAST_MODEL: us.anthropic.claude-sonnet-4-6

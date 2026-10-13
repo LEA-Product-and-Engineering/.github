@@ -12,10 +12,10 @@ on:
       review_app_private_key:
         required: true
 
-# Inference via AWS Bedrock (LEA Development account) — see claude-review.yml
+# Inference via AWS Bedrock (LEA CI/CD account) — see claude-review.yml
 # for the rationale; role ARN is not a secret (trust policy scopes to this org).
 env:
-  AWS_ROLE_ARN: arn:aws:iam::902028413825:role/lea-review-bedrock
+  AWS_ROLE_ARN: arn:aws:iam::442879246345:role/lea-review-bedrock
   AWS_REGION: us-east-1
   REVIEW_MODEL: us.anthropic.claude-opus-4-6-v1
   SMALL_FAST_MODEL: us.anthropic.claude-sonnet-4-6
