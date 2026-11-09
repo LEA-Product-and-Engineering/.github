@@ -25,7 +25,7 @@ jobs:
           owner: LEA-Product-and-Engineering
           repositories: |
             lea-app
-            infra
+            lea-infra
             lea-k8s
             lea-wealth-plugins
 

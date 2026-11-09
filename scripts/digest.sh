@@ -7,7 +7,7 @@ set -euo pipefail
 
 ORG="${ORG:-LEA-Product-and-Engineering}"
 SINCE=$(date -u -d '7 days ago' +%F)
-REPOS=(lea-app infra lea-k8s lea-wealth-plugins)
+REPOS=(lea-app lea-infra lea-k8s lea-wealth-plugins)
 
 sections=""
 bypass_count=0
