@@ -1,0 +1,34 @@
+{
+  "attribution": { "commit": "", "pr": "" },
+  "includeCoAuthoredBy": false,
+  "extraKnownMarketplaces": {
+    "lea-engineering-skills": {
+      "source": { "source": "github", "repo": "LEA-Product-and-Engineering/lea-engineering-skills" }
+    }
+  },
+  "enabledPlugins": { "lea-engineering@lea-engineering-skills": true },
+  "enabledMcpjsonServers": ["linear-server"],
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)", "Bash(git log:*)", "Bash(git diff:*)", "Bash(git fetch:*)",
+      "Bash(git worktree list:*)", "Bash(git branch --show-current:*)", "Bash(git rev-parse:*)",
+      "Bash(gh pr view:*)", "Bash(gh pr list:*)", "Bash(gh run list:*)", "Bash(gh run view:*)",
+      "Bash(actionlint:*)",
+      "mcp__linear-server__save_issue", "mcp__linear-server__save_comment"
+    ],
+    "deny": [
+      "Bash(gh pr merge:*)",
+      "Bash(gh repo edit:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-git.sh", "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}
